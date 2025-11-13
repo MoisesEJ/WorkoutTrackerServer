@@ -3,34 +3,49 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs')
 const cookieParser = require('cookie-parser');
 const pool = require('./accessDB');
+const cors = require('cors')
+const https = require('https')
+const fs = require('fs')
+const path = require('path')
 
 require('dotenv').config();
 
 const app = express();
 
+app.use(cors({
+  origin: process.env.URL_WEB,
+  credentials: true
+}))
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-const PORT = process.env.PORT || 5000;
-const URL = process.env.URL || 'http://localhost:5000'
-const SECRET = process.env.API_SECRET || null
+const sslOptions = {
+  key: fs.readFileSync(path.resolve(__dirname, 'localhost-key.pem')),
+  cert: fs.readFileSync(path.resolve(__dirname, 'localhost.pem')),
+}
+
+const PORT = process.env.PORT;
+const HOST = process.env.HOST
+const SECRET = process.env.API_SECRET
 
 const verifyToken = (req, res, next) => {
-  const authHeader = req.headers['authorization']
-
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ message: 'Authorization header missing or malformed' })
+  const token = req.cookies.token
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      message: 'Token no proportioned'
+    });
   }
-
-  const token = authHeader.split(' ')[1]
-
   try {
     const decoded = jwt.verify(token, SECRET);
     req.user = decoded;
     next();
   } catch (err) {
-    return res.status(401).json({ error: 'Token inválido' });
+    return res.status(401).json({
+      success: false,
+      message: 'Token invalid'
+    });
   }
 }
 
@@ -46,6 +61,7 @@ app.post('/register', async (req, res) => {
 
     if (!username || !email || !password) {
       return res.status(400).json({
+        success: false,
         message: 'Missing required fields'
       });
     }
@@ -55,34 +71,61 @@ app.post('/register', async (req, res) => {
 
     if (rows.length !== 0) {
       return res.status(401).json({
+        success: false,
         message: 'User already exists'
       });
     }
 
-    await pool.execute('INSERT INTO users (id, username, password_hash, email) VALUES (?,?,?,?)',[idQuery, username, password, email])
+    const passHash = bcrypt.hashSync(password)
+
+    await pool.execute('INSERT INTO users (id, username, password_hash, email) VALUES (?,?,?,?)',[idQuery, username, passHash, email])
 
     return res.status(201).json({
+      success: true,
       message: 'User created successfully'
     });
   } catch (error) {
     return res.status(500).json({
+      success: false,
       message: 'Internal Server Error: register user'
     })
   }
 });
 
-app.get('/login/user', async (req, res) => {
+app.post('/login/user', async (req, res) => {
   try {
     const { username, password } = req.body
-    const [row] = await pool.query('SELECT id, username, email, photo FROM users WHERE username = ? AND password_hash = ?', [username, password])
 
-    if (row.lenght === 0) {
+    const [pass] = await pool.execute('SELECT password_hash FROM users WHERE username = ?', [username])
+
+    if (pass.length === 0) {
       return res.status(401).json({
+        success: false,
+        message: 'Username missing or invalid'
+      })
+    }
+
+    const passHash = bcrypt.compareSync(password, pass[0].password_hash)
+
+    if (!passHash) {
+      return res.status(401).json({
+        success: false,
+        message: 'Password is invalid'
+      })
+    }
+
+    const [row] = await pool.query('SELECT id, username, email, photo FROM users WHERE username = ?', [username])
+
+    if (row.length === 0) {
+      return res.status(401).json({
+        success: false,
         message: 'Credentials Invalid'
       })
     }
+
     if (!SECRET) {
       return res.status(500).json({
+        success: false,
         message: 'Error get credentials'
       })
     }
@@ -92,26 +135,58 @@ app.get('/login/user', async (req, res) => {
     }
     const token = jwt.sign(payload, SECRET, {expiresIn: '7d'})
 
-    res.status(200).json({token})
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Strict',
+      maxAge: 604800000,
+    })
+
+    res.status(200).json({
+      success: true,
+      message: 'Login successful',
+    })
   } catch (error) {
     return res.status(500).json({
+        success: false,
       message: 'Internal Server Error: login with username'
     })
   }
 });
 
-app.get('/login/email', async (req, res) => {
+app.post('/login/email', async (req, res) => {
   try {
     const { email, password } = req.body
-    const [row] = await pool.query('SELECT id, username, email, photo FROM users WHERE email = ? AND password_hash = ?', [email, password])
+
+    const [pass] = await pool.execute('SELECT password_hash FROM users WHERE email = ?', [email])
+    
+    if (pass.lenght === 0) {
+      return res.status(401).json({
+        success: false,
+        message: 'Email missing or invalid'
+      })
+    }
+
+    const passHash = bcrypt.compareSync(password, pass[0].password_hash)
+
+    if (!passHash) {
+      return res.status(401).json({
+        success: false,
+        message: 'Password is invalid'
+      })
+    }
+
+    const [row] = await pool.query('SELECT id, username, email, photo FROM users WHERE email = ?', [email])
 
     if (row.lenght === 0) {
       return res.status(401).json({
+        success: false,
         message: 'Credentials Invalid'
       })
     }
     if (!SECRET) {
       return res.status(500).json({
+        success: false,
         message: 'Error get credentials'
       })
     }
@@ -121,9 +196,20 @@ app.get('/login/email', async (req, res) => {
     }
     const token = jwt.sign(payload, SECRET, {expiresIn: '7d'})
 
-    res.status(200).json({token})
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Strict',
+      maxAge: 604800000,
+    })
+
+    res.status(200).json({
+      success: true,
+      message: 'Login successful',
+    })
   } catch (error) {
     return res.status(500).json({
+      success: false,
       message: 'Internal Server Error: login with email'
     })
   }
@@ -133,9 +219,27 @@ app.get('/login/email', async (req, res) => {
 
 app.use(verifyToken);
 
+app.post('/logout', async (req, res) => {
+  try {
+    res.clearCookie('token', {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Strict',
+    })
+    return res.status(200).json({
+      success: true,
+      message: 'Logout successful'
+    })
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Internal Server Error: logout user'
+    })
+  }
+})
+
 app.get('/user', async (req, res) => {
   try {
-    console.log(req.user)
     const [rows] = await pool.execute('SELECT id, username, email, photo FROM users WHERE id = ?', [req.user.id])
 
     if (rows.length === 0) {
@@ -158,35 +262,42 @@ app.get('/user', async (req, res) => {
   }
 })
 
-app.put('/change/user', async (req, res) => {
+app.put('/user', async (req, res) => {
   try {
     const { username, password } = req.body
+
+    if (!username || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Request malformed or invalid'
+      })
+    }
 
     const [user] = await pool.execute('SELECT username FROM users WHERE username = ?', [username])
 
     if (user.length !== 0) {
       return res.status(400).json({
         success: false,
-        user: req.user.id,
         message: 'Username already exist'
       })
     }
 
-    const [rows] = await pool.execute('SELECT id, username, email, photo FROM users WHERE id = ? AND password_hash = ?', [req.user.id, password])
+    const [pass] = await pool.execute('SELECT password_hash FROM users WHERE id = ?', [req.user.id])
 
-    if (rows.length === 0) {
-      return res.status(400).json({
+    const passHash = bcrypt.compareSync(password, pass[0].password_hash)
+
+    if (!passHash) {
+      return res.status(401).json({
         success: false,
-        user: req.user.id,
-        message: 'Password wrong or invalid'
+        message: 'Password is invalid'
       })
     }
+
 
     await pool.execute('UPDATE users SET username = ? WHERE id = ?', [username, req.user.id])
 
     res.status(200).json({
       success: true,
-      user: req.user.id,
       message: 'Username update successfully'
     })
   } catch (error) {
@@ -197,7 +308,7 @@ app.put('/change/user', async (req, res) => {
   }
 })
 
-app.put('/change/email', async (req, res) => {
+app.put('/email', async (req, res) => {
   try {
     const { email, password } = req.body
 
@@ -236,25 +347,27 @@ app.put('/change/email', async (req, res) => {
   }
 })
 
-app.put('/change/pass', async (req, res) => {
+app.put('/pass', async (req, res) => {
   try {
     const { newpassword } = req.body
 
     const [pass] = await pool.execute('SELECT password_hash FROM users WHERE id = ?', [req.user.id])
 
-    if (pass[0].password_hash === newpassword) {
-      return res.status(400).json({
+    const passHash = bcrypt.compareSync(newpassword, pass[0].password_hash)
+
+    if (passHash) {
+      return res.status(401).json({
         success: false,
-        user: req.user.id,
         message: 'Password already exist'
       })
     }
+    
+    const newPassHash = bcrypt.hashSync(newpassword)
 
-    await pool.execute('UPDATE users SET password_hash = ? WHERE id = ?', [newpassword, req.user.id])
+    await pool.execute('UPDATE users SET password_hash = ? WHERE id = ?', [newPassHash, req.user.id])
 
     res.status(200).json({
       success: true,
-      user: req.user.id,
       message: 'Password update successfully'
     })
   } catch (error) {
@@ -265,28 +378,71 @@ app.put('/change/pass', async (req, res) => {
   }
 })
 
-app.delete('/delete/user', async (req, res)  => {
+app.put('/photo', async (req, res) => {
   try {
-    const [rows] = await pool.execute('SELECT id, username FROM users WHERE id = ?', [req.user.id])
+    const { avatar } = req.body
+
+    const [photo] = await pool.execute('SELECT photo FROM users WHERE id = ?', [req.user.id])
+
+    if (photo === avatar) {
+      return res.status(400).json({
+        success: false,
+        message: 'Avatar has already selected'
+      })
+    }
+
+    await pool.execute('UPDATE users SET photo = ? WHERE id = ?', [avatar, req.user.id])
+
+    res.status(200).json({
+      success: true,
+      message: 'Avatar updated successfully'
+    })
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message
+    })
+  }
+})
+
+app.delete('/user', async (req, res)  => {
+  try {
+    const { password } = req.body
+
+    const [rows] = await pool.execute('SELECT password_hash FROM users WHERE id = ?', [req.user.id])
 
     if (rows.lenght === 0) {
       return res.status(400).json({
         success: false,
-        message: 'ID user missing or invalid'
+        message: 'User credentials missing or invalid'
+      })
+    }
+
+    const passHash = bcrypt.compareSync(password, rows[0].password_hash)
+
+    if (!passHash) {
+      return res.status(401).json({
+        success: false,
+        message: 'Password is invalid'
       })
     }
 
     await pool.execute('DELETE FROM users WHERE id = ?', [req.user.id])
 
+    res.clearCookie('token', {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Strict',
+    })
+
     res.status(200).json({
       success: true,
-      message: 'User deleted successfully',
-      userDeleted: req.user.id
+      message: 'User deleted successfully'
     })
   } catch (error) {
     return res.status(500).json({
       success: false,
-      message: 'Internal Server Error: Not'
+      message: 'Internal Server Error: Delete user'
     })
   }
 })
@@ -302,7 +458,6 @@ app.post('/routines', async (req, res) => {
     if (rows.length !== 0) {
       return res.status(404).json({
         success: false,
-        user: req.user.id,
         message: 'Routine already exists'
       })
     }
@@ -311,7 +466,6 @@ app.post('/routines', async (req, res) => {
 
     res.status(201).json({
       success: true,
-      user: req.user.id,
       message: 'Created rutine successfully'
     })
   } catch (error) {
@@ -329,8 +483,7 @@ app.get('/routines', async (req, res) => {
     res.status(200).json({
       success: true,
       message: 'Rutine get successfully',
-      user: req.user.id,
-      data: rows
+      routines: rows
     })
   } catch (error) {
     return res.status(500).json({
@@ -381,7 +534,6 @@ app.put('/routines', async (req, res) => {
     if (!routine || !routine.name || !routine.id) {
       return res.status(400).json({
         success: false,
-        user: req.user.id,
         message: 'Routine data missing or invalid',
       })
     }
@@ -391,7 +543,6 @@ app.put('/routines', async (req, res) => {
     if (rows.length === 0) {
       return res.status(404).json({
         success: false,
-        user: req.user.id,
         message: 'Routine not exist'
       })
     }
@@ -400,7 +551,6 @@ app.put('/routines', async (req, res) => {
 
     res.status(200).json({
       success: true,
-      user: req.user.id,
       message: 'Routine update successfully',
       routine: routine
     })
@@ -414,39 +564,29 @@ app.put('/routines', async (req, res) => {
 
 app.delete('/routines', async (req, res) => {
   try {
-    const { routines } = req.body
+    const { routine } = req.body
 
-    if (routines.lenght === 0) {
+    if (!routine || !routine.id) {
       return res.status(400).json({
         success: false,
-        user: req.user.id,
         message: 'Routines data missing or invalid'
       })
     }
 
-    for (const routine of routines) {
-      const [rows] = await pool.execute('SELECT * FROM routines WHERE id = ?', [routine.id])
-        if (rows.length === 0) {
-          return res.status(404).json({
-            success: false,
-            user: req.user.id,
-            message: 'ID routine wrong o invalid',
-            routineWrong: routines
-          })
-        }
+    const [rows] = await pool.execute('SELECT * FROM routines WHERE id = ?', [routine.id])
+    if (rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ID routine wrong o invalid',
+      })
     }
 
-    await Promise.all(
-      routines.map(routine => {
-        pool.execute('DELETE FROM routines WHERE id = ?', [routine.id])
-      })
-    )
+    await pool.execute('DELETE FROM routines WHERE id = ?', [routine.id])
 
     res.status(200).json({
       success: true,
-      user: req.user.id,
       message: 'User routines were deleted',
-      routinesDeleted: routines
+      routinesDeleted: routine
     })
   } catch (error) {
     return res.status(500).json({
@@ -460,19 +600,16 @@ app.delete('/routines', async (req, res) => {
 
 app.post('/exercises', async (req, res) => {
   try {
-    const { exercises } = req.body;
+    const { exercise } = req.body;
 
-    if (!Array.isArray(exercises) || exercises.length === 0) {
+    if (!exercise || !exercise.name || !exercise.weight) {
       return res.status(400).json({
         success: false,
-        message: 'No exercises provided'
+        message: 'Exercise data missing or invalid'
       });
     }
 
-    const placeholders = exercises.map(() => '(?, ?, ?)').join(', ');
-    const values = exercises.flatMap(exercise => [exercise.name, exercise.weight, req.user.id]);
-
-    await pool.execute(`INSERT INTO exercises(name, weight, id_user) VALUES ${placeholders}`, values);
+    await pool.execute(`INSERT INTO exercises(name, weight, id_user) VALUES (?, ?, ?)`, [exercise.name, exercise.weight, req.user.id]);
 
     res.status(201).json({
       success: true,
@@ -527,8 +664,7 @@ app.get('/exercises', async (req, res) => {
     res.status(200).json({
       success: true,
       message: 'Successfully get exercises of user',
-      user: req.user.id,
-      data: rows
+      exercises: rows
     })
   } catch (error) {
     return res.status(500).json({
@@ -545,7 +681,6 @@ app.put('/exercises', async (req, res) => {
     if (!exercise || !exercise.id || !exercise.name || typeof exercise.weight !== 'number') {
       return res.status(400).json({
         success: false,
-        user: req.user.id,
         message: 'Exercise missing or invalid'
       })
     }
@@ -555,7 +690,6 @@ app.put('/exercises', async (req, res) => {
     if (rows.length === 0) {
       return res.status(404).json({
         success: false,
-        user: req.user.id,
         message: 'Exercise not exist'
       })
     }
@@ -564,14 +698,11 @@ app.put('/exercises', async (req, res) => {
 
     res.status(200).json({
       success: true,
-      user: req.user.id,
-      message: 'Successfully update exercise',
-      exercise: exercise
+      message: 'Successfully update exercise'
     })
   } catch (error) {
     return res.status(500).json({
       success: false,
-      user: req.user.id,
       message: 'Internal Server Error: Update exercise'
     })
   }
@@ -579,39 +710,28 @@ app.put('/exercises', async (req, res) => {
 
 app.delete('/exercises', async (req, res) => {
   try {
-    const { exercises } = req.body
+    const { exercise } = req.body
 
-    if (exercises.lenght === 0) {
+    if (exercise.lenght === 0) {
       return res.status(400).json({
         success: false,
-        user: req.user.id,
         message: 'Exercises missing or invalid'
       })
     }
 
-    for (const exercise of exercises) {
-      const [rows] = await pool.execute('SELECT * FROM exercises WHERE id = ?', [exercise.id])
-        if (rows.length === 0) {
-          return res.status(404).json({
-            success: false,
-            user: req.user.id,
-            message: 'ID exercise wrong o invalid',
-            exerciseWrong: exercise
-          })
-        }
+    const [rows] = await pool.execute('SELECT * FROM exercises WHERE id = ?', [exercise.id])
+    if (rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ID exercise wrong o invalid'
+      })
     }
 
-    await Promise.all(
-      exercises.map(exercise => {
-        pool.execute('DELETE FROM exercises WHERE id = ?', [exercise.id])
-      })
-    )
+    await pool.execute('DELETE FROM exercises WHERE id = ?', [exercise.id])
 
     res.status(200).json({
       success: true,
-      user: req.user.id,
-      message: 'Successfully delete exercise of user',
-      exerciseDeleted: exercises
+      message: 'Successfully delete exercise of user'
     })
   } catch (error) {
     return res.status(500).json({
@@ -701,14 +821,14 @@ app.get('/days', async (req, res) => {
     const [days] = await pool.execute('SELECT name FROM days WHERE id_routine = ? GROUP BY name', [routine])
 
     if (days.length === 0) {
-      return res.status(400).json({
+      return res.status(200).json({
         success: false,
-        message: 'ID routine missing or invalid'
+        message: 'No days found for the specified routine',
       })
     }
 
     for await (const day of days) {
-      const [exercises] = await pool.execute('SELECT id_exercise FROM days WHERE name = ?', [day.name])
+      const [exercises] = await pool.execute('SELECT id_exercise FROM days WHERE name = ? AND id_routine = ?', [day.name, routine])
       const id = exercises.flatMap(exercise => exercise.id_exercise)
       data.push({
         name: day.name,
@@ -718,11 +838,8 @@ app.get('/days', async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: 'Days od routine get successfully',
-      days: {
-        id: routine,
-        data: data
-      }
+      message: 'Days of routine get successfully',
+      days: data
     })
   } catch (error) {
     return res.status(500).json({
@@ -734,38 +851,26 @@ app.get('/days', async (req, res) => {
 
 app.put('/days', async (req, res) => {
   try {
-    const { days } = req.body
+    const { routine } = req.body
 
-    if (!Array.isArray(days.exercises) || days.exercises.lenght === 0 || !days.routine || !days.name) {
+    if (!routine.id || !Array.isArray(routine.days)) {
       return res.status(400).json({
         success: false,
         message: 'Exercises without data or malformed'
       })
     }
 
-    const [rows] = await pool.execute('SELECT id, id_exercise FROM days WHERE id_routine = ? AND name = ?', [days.routine, days.name])
+    await pool.execute('DELETE FROM days WHERE id_routine = ?', [routine.id])
 
-    if (rows.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Exercises day not exist'
-      })
+    for await (const day of routine.days) {
+      for await (const exercise of day.exercises) {
+        await pool.execute('INSERT INTO days(name, id_routine, id_exercise) VALUES (?, ?, ?)', [day.name, routine.id, exercise])
+      }
     }
-
-    for await (const row of rows) {
-      await pool.execute('DELETE FROM days WHERE id = ?', [row.id])
-    }
-
-    for await (const exercise of days.exercises) {
-      await pool.execute('INSERT INTO days(name, id_routine, id_exercise) VALUES (?, ?, ?)', [days.name, days.routine, exercise])
-    }
-
-    const [updated] = await pool.execute('SELECT id, id_exercise FROM days WHERE id_routine = ? AND name = ?', [days.routine, days.name])
 
     res.status(200).json({
       success: true,
-      message: 'Day update successfully',
-      exercisesUpdated: updated
+      message: 'Day update successfully'
     })
   } catch (error) {
     return res.status(500).json({
@@ -777,30 +882,29 @@ app.put('/days', async (req, res) => {
 
 app.delete('/days', async (req, res) => {
   try {
-    const { days } = req.body
+    const { routine } = req.body
 
-    if (!days.routine || !days.name) {
+    if (!routine) {
       return res.status(400).json({
         success: false,
-        message: 'Day without data or malformed'
+        message: 'Days without data or malformed'
       })
     }
 
-    const [rows] = await pool.execute('SELECT id FROM days WHERE id_routine = ? AND name = ?', [days.routine, days.name])
+    const [rows] = await pool.execute('SELECT id FROM days WHERE id_routine = ?', [routine])
 
     if (rows.length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'Day not exist'
+        message: 'Days not exist'
       })
     }
 
-    await pool.execute('DELETE FROM days WHERE id_routine = ? AND name = ?', [days.routine, days.name])
+    await pool.execute('DELETE FROM days WHERE id_routine = ?', [routine])
 
     res.status(200).json({
       success: true,
-      message: 'Day deleted successfully',
-      dayDeleted: days
+      message: 'Days deleted successfully',
     })
   } catch (error) {
     return res.status(500).json({
@@ -812,6 +916,6 @@ app.delete('/days', async (req, res) => {
 
 // **}
 
-app.listen(PORT, () => {
-  console.log(`Server is running on ${URL}`);
-});
+https.createServer(sslOptions, app).listen(PORT, HOST, () => {
+  console.log(`Server HTTPS listen on https://${HOST}:${PORT}`)
+})
