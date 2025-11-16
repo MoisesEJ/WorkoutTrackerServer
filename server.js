@@ -160,7 +160,7 @@ app.post('/login/email', async (req, res) => {
 
     const [pass] = await pool.execute('SELECT password_hash FROM users WHERE email = ?', [email])
     
-    if (pass.lenght === 0) {
+    if (pass.length === 0) {
       return res.status(401).json({
         success: false,
         message: 'Email missing or invalid'
@@ -178,7 +178,7 @@ app.post('/login/email', async (req, res) => {
 
     const [row] = await pool.query('SELECT id, username, email, photo FROM users WHERE email = ?', [email])
 
-    if (row.lenght === 0) {
+    if (row.length === 0) {
       return res.status(401).json({
         success: false,
         message: 'Credentials Invalid'
