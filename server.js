@@ -20,13 +20,8 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-const sslOptions = {
-  key: fs.readFileSync(path.resolve(__dirname, 'localhost-key.pem')),
-  cert: fs.readFileSync(path.resolve(__dirname, 'localhost.pem')),
-}
-
-const PORT = process.env.PORT;
-const HOST = process.env.HOST
+const PORT = process.env.PORT || '5000';
+const HOST = process.env.HOST || '0.0.0.0'
 const SECRET = process.env.API_SECRET
 
 const verifyToken = (req, res, next) => {
@@ -245,7 +240,7 @@ app.get('/user', async (req, res) => {
     if (rows.length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'Token ivanlid or expired'
+        message: 'Token invalid or expired'
       })
     }
 
@@ -349,11 +344,11 @@ app.put('/email', async (req, res) => {
 
 app.put('/pass', async (req, res) => {
   try {
-    const { newpassword } = req.body
+    const { newPassword } = req.body
 
     const [pass] = await pool.execute('SELECT password_hash FROM users WHERE id = ?', [req.user.id])
 
-    const passHash = bcrypt.compareSync(newpassword, pass[0].password_hash)
+    const passHash = bcrypt.compareSync(newPassword, pass[0].password_hash)
 
     if (passHash) {
       return res.status(401).json({
@@ -362,7 +357,7 @@ app.put('/pass', async (req, res) => {
       })
     }
     
-    const newPassHash = bcrypt.hashSync(newpassword)
+    const newPassHash = bcrypt.hashSync(newPassword)
 
     await pool.execute('UPDATE users SET password_hash = ? WHERE id = ?', [newPassHash, req.user.id])
 
@@ -411,7 +406,7 @@ app.delete('/user', async (req, res)  => {
 
     const [rows] = await pool.execute('SELECT password_hash FROM users WHERE id = ?', [req.user.id])
 
-    if (rows.lenght === 0) {
+    if (rows.length === 0) {
       return res.status(400).json({
         success: false,
         message: 'User credentials missing or invalid'
@@ -466,7 +461,7 @@ app.post('/routines', async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: 'Created rutine successfully'
+      message: 'Created routine successfully'
     })
   } catch (error) {
     return res.status(500).json({
@@ -482,7 +477,7 @@ app.get('/routines', async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: 'Rutine get successfully',
+      message: 'Routine get successfully',
       routines: rows
     })
   } catch (error) {
@@ -712,7 +707,7 @@ app.delete('/exercises', async (req, res) => {
   try {
     const { exercise } = req.body
 
-    if (exercise.lenght === 0) {
+    if (exercise.length === 0) {
       return res.status(400).json({
         success: false,
         message: 'Exercises missing or invalid'
@@ -764,7 +759,7 @@ app.post('/days', async (req, res) => {
     }
 
     for (const day of days.data) {
-      if (!Array.isArray(day.exercises) || day.exercises.lenght === 0) {
+      if (!Array.isArray(day.exercises) || day.exercises.length === 0) {
         return res.status(400).json({
           success: false,
           message: 'Days(exercises) data missing or malformed'
@@ -796,7 +791,7 @@ app.post('/days', async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: 'Days of exericse were created successfully',
+      message: 'Days of exercise were created successfully',
     })
   } catch (error) {
     return res.status(500).json({
@@ -916,6 +911,6 @@ app.delete('/days', async (req, res) => {
 
 // **}
 
-https.createServer(sslOptions, app).listen(PORT, HOST, () => {
-  console.log(`Server HTTPS listen on https://${HOST}:${PORT}`)
+app.listen(PORT, HOST, () => {
+  console.log(`Server listen on http://${HOST}:${PORT}`)
 })
